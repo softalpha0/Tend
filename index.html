@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <meta name="description" content="Tend is a hands-first mixed reality focus timer. A plant grows on your real desk while you work." />
+    <link rel="icon" href="data:," />
+    <title>Tend</title>
+    <style>
+      :root {
+        --card: rgba(255, 255, 255, 0.92);
+        --text: #1f2a1d;
+        --muted: #4d5a4a;
+        --accent: #3f7d3a;
+      }
+      body {
+        margin: 0;
+        background: #e8eee6;
+        font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+        color: var(--text);
+      }
+      #landing {
+        position: fixed;
+        left: 16px;
+        top: 16px;
+        max-width: 360px;
+        padding: 20px 22px;
+        border-radius: 16px;
+        background: var(--card);
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.12);
+        z-index: 10;
+      }
+      #landing.hidden,
+      #landing.in-xr {
+        display: none;
+      }
+      h1 {
+        margin: 0 0 6px;
+        font-size: 28px;
+        letter-spacing: -0.5px;
+      }
+      p {
+        margin: 0 0 12px;
+        line-height: 1.45;
+        color: var(--muted);
+        font-size: 15px;
+      }
+      ol {
+        margin: 0 0 14px;
+        padding-left: 20px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      button {
+        font: inherit;
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 18px;
+        cursor: pointer;
+      }
+      #enter-xr {
+        background: var(--accent);
+        color: #fff;
+        font-weight: 600;
+      }
+      #enter-xr:disabled {
+        background: #9fb39c;
+        cursor: default;
+      }
+      #hide-landing {
+        background: transparent;
+        color: var(--accent);
+      }
+      .settings {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin: 4px 0 14px;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .settings label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+      }
+      .settings input {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--accent);
+      }
+      .share {
+        border-top: 1px solid #dfe6dc;
+        margin-top: 14px;
+        padding-top: 12px;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .share-row {
+        display: flex;
+        gap: 8px;
+        margin-top: 6px;
+      }
+      .share input[type='text'] {
+        flex: 1;
+        min-width: 0;
+        font: inherit;
+        padding: 8px 10px;
+        border: 1px solid #cfd8cc;
+        border-radius: 999px;
+        background: #fff;
+        color: var(--text);
+      }
+      #share-garden {
+        background: #e4efe1;
+        color: var(--accent);
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      #share-status {
+        margin: 8px 0 0;
+        font-size: 13px;
+        word-break: break-all;
+      }
+      #friends-note {
+        margin: 8px 0 0;
+        font-size: 13px;
+      }
+      #clear-friends {
+        background: none;
+        padding: 0;
+        color: var(--accent);
+        text-decoration: underline;
+        font-size: 13px;
+      }
+      #xr-note {
+        margin-top: 12px;
+        font-size: 13px;
+      }
+      @media (max-width: 480px) {
+        #landing {
+          left: 16px;
+          right: 16px;
+          max-width: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="scene-container"></div>
+    <div id="landing">
+      <h1>Tend</h1>
+      <p>A plant grows on your real desk while you focus. Quit early and it wilts.</p>
+      <ol>
+        <li>Pinch the seed and drop it in the pot.</li>
+        <li>Hold your open palm over the pot to water it and start.</li>
+        <li>Turn a palm up to see the time left.</li>
+        <li>Your first session is a 2-minute starter. Daily streaks unlock new plants.</li>
+      </ol>
+      <div class="settings">
+        <label><input type="checkbox" id="ambient" /> Soft rain sound during a session</label>
+        <label><input type="checkbox" id="spoken" /> Read cues aloud (start, halfway, time left)</label>
+        <label><input type="checkbox" id="highContrast" /> Large, high-contrast labels</label>
+        <label><input type="checkbox" id="voice" /> Voice commands: "plant", "water", "time", "help"</label>
+      </div>
+      <button id="enter-xr">Enter mixed reality</button>
+      <button id="hide-landing">Try it here</button>
+      <p id="xr-note">Checking for mixed reality support...</p>
+      <div class="share">
+        <strong>Shared gardens</strong>
+        <div class="share-row">
+          <input type="text" id="garden-name" maxlength="20" placeholder="Your name" aria-label="Your name" />
+          <button id="share-garden">Share my garden</button>
+        </div>
+        <p id="share-status"></p>
+        <p id="friends-note" hidden></p>
+      </div>
+    </div>
+    <script type="module" src="/src/index.ts"></script>
+  </body>
+</html>
