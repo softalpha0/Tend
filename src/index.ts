@@ -2,17 +2,31 @@ import { SessionMode, VisibilityState, World } from '@iwsdk/core';
 import projectOptions from 'virtual:iwsdk-project';
 import { HandGestureSystem } from './hands.js';
 import { unlockAudio } from './sound.js';
-import { addFriend, shareLink, takeSharedGarden } from './share.js';
-import { currentStreak, loadState, saveState } from './state.js';
+import { addFriend, shareLink, takeFriendCode, takeSharedGarden } from './share.js';
+import { currentStreak, formatMinutes, loadState, saveState, weekSummary } from './state.js';
+import { ensureIdentity, MAX_LIVE_FRIENDS, normalizeCode, syncConfig } from './sync.js';
 import { voiceSupported } from './voice.js';
 import { TendSystem } from './tend-system.js';
 
-// A friend's share link: add their garden before the world loads the saved state.
+// Before the world loads the saved state: give this device a friend code when
+// live sync is set up, and add a friend's garden from a share link.
+const live = syncConfig() !== null;
+const sharedCode = takeFriendCode();
 const visiting = takeSharedGarden();
-if (visiting) {
+{
   const state = loadState();
-  state.friends = addFriend(state.friends, visiting);
-  saveState(state);
+  let changed = live && ensureIdentity(state);
+  const code = sharedCode ? normalizeCode(sharedCode) : null;
+  if (visiting) {
+    if (live && code) visiting.code = code;
+    state.friends = addFriend(state.friends, visiting);
+    changed = true;
+  }
+  if (live && code && code !== state.syncCode && !state.friendCodes.includes(code)) {
+    state.friendCodes = [code, ...state.friendCodes].slice(0, MAX_LIVE_FRIENDS);
+    changed = true;
+  }
+  if (changed) saveState(state);
 }
 
 World.create(
@@ -22,7 +36,25 @@ World.create(
   world.registerSystem(HandGestureSystem, { priority: -1 });
   world.registerSystem(TendSystem);
   setUpLanding(world);
+
+  // Installed as an app (Meta Quest PWA): there is no page to click, so the
+  // launch itself enters mixed reality. Browser tabs keep the Enter button.
+  if ('getDigitalGoodsService' in window && navigator.xr) {
+    void navigator.xr
+      .isSessionSupported(SessionMode.ImmersiveAR)
+      .then((supported) => {
+        if (supported) world.launchXR();
+      })
+      .catch(() => undefined);
+  }
 });
+
+// Offline support for the installed app (production builds only).
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').catch(() => undefined);
+  });
+}
 
 /** The HTML landing card: explains Tend and offers the way into mixed reality. */
 function setUpLanding(world: World): void {
@@ -108,9 +140,13 @@ function setUpSharing(): void {
   nameInput.addEventListener('change', () => send({ name: nameInput.value.trim() }));
 
   if (visiting) {
-    status.textContent = `${visiting.name}'s garden is now on your desk, next to yours.`;
+    status.textContent = live
+      ? `${visiting.name}'s garden is now on your desk, and it stays up to date.`
+      : `${visiting.name}'s garden is now on your desk, next to yours.`;
   }
   showFriends();
+  setUpLiveSync(send, status, showFriends);
+  showWeek();
 
   shareButton.addEventListener('click', async () => {
     send({ name: nameInput.value.trim() });
@@ -120,7 +156,7 @@ function setUpSharing(): void {
       status.textContent = 'Finish a session first, so there is a plant to share.';
       return;
     }
-    const link = shareLink(state, currentStreak(state));
+    const link = shareLink(state, currentStreak(state), live ? state.syncCode : undefined);
     try {
       if (navigator.share) {
         await navigator.share({ title: 'My Tend garden', text: 'Here is my focus garden on Tend.', url: link });
@@ -137,4 +173,47 @@ function setUpSharing(): void {
       status.textContent = 'Copy this link and send it to a friend: ' + link;
     }
   });
+}
+
+/** Friend codes for live shared gardens (only when Supabase is set up). */
+function setUpLiveSync(
+  send: (detail: Record<string, unknown>) => void,
+  status: HTMLElement,
+  refreshNote: () => void,
+): void {
+  const box = document.getElementById('live-sync')!;
+  if (!live) return;
+  box.hidden = false;
+  (document.getElementById('my-code') as HTMLElement).textContent = loadState().syncCode;
+  const input = document.getElementById('friend-code') as HTMLInputElement;
+  const add = () => {
+    const code = normalizeCode(input.value);
+    if (!code) {
+      status.textContent = 'Friend codes are 8 letters and numbers, like K7M2QX9A.';
+      return;
+    }
+    if (code === loadState().syncCode) {
+      status.textContent = 'That is your own code. Send it to a friend instead.';
+      return;
+    }
+    send({ addFriendCode: code });
+    input.value = '';
+    status.textContent = 'Added. Their garden appears on your desk once it loads.';
+    window.setTimeout(refreshNote, 3000);
+  };
+  document.getElementById('add-friend')!.addEventListener('click', add);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') add();
+  });
+}
+
+/** The last seven days, shown on the start card. */
+function showWeek(): void {
+  const state = loadState();
+  const week = weekSummary(state);
+  const box = document.getElementById('week')!;
+  if (week.sessions === 0) return;
+  const streak = week.streak > 1 ? ` · ${week.streak}-day streak` : '';
+  box.textContent = `This week: ${week.sessions} session${week.sessions === 1 ? '' : 's'} · ${formatMinutes(week.minutes)} focused${streak}`;
+  box.hidden = false;
 }

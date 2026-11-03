@@ -137,6 +137,26 @@ const LOOKS: Record<SpeciesId, PlantLook> = {
     colors: ['#9b7fd1', '#b39ddb'], center: '#9b7fd1', centerSize: 0.006, heightScale: 1.15, flowerScale: 1,
     leaves: 6, leafScale: [0.026, 0.003, 0.006],
   },
+  hellebore: {
+    petals: 5, petalScale: [0.018, 0.004, 0.015], petalOffset: 0.015, openTilt: 0.5,
+    colors: ['#f3efe6', '#8e4a6b'], center: '#e8d36a', centerSize: 0.006, heightScale: 0.8, flowerScale: 1,
+    leaves: 4, leafScale: [0.026, 0.004, 0.012],
+  },
+  cherry: {
+    petals: 5, petalScale: [0.012, 0.003, 0.01], petalOffset: 0.01, openTilt: 0.15,
+    colors: ['#f7c6d9', '#fde7ef'], center: '#d9537a', centerSize: 0.004, heightScale: 1.1, flowerScale: 0.95,
+    leaves: 3, leafScale: [0.02, 0.003, 0.01],
+  },
+  hibiscus: {
+    petals: 5, petalScale: [0.026, 0.004, 0.018], petalOffset: 0.022, openTilt: 0.35,
+    colors: ['#e5484d', '#f4845f', '#f6c453'], center: '#c1272d', centerSize: 0.005, heightScale: 1, flowerScale: 1.2,
+    leaves: 6, leafScale: [0.026, 0.004, 0.014],
+  },
+  chrysanthemum: {
+    petals: 22, petalScale: [0.016, 0.003, 0.004], petalOffset: 0.013, openTilt: 0.4,
+    colors: ['#e07a2f', '#c9483b', '#f2c14e'], center: '#b5651d', centerSize: 0.006, heightScale: 1, flowerScale: 1.1,
+    leaves: 6, leafScale: [0.022, 0.004, 0.013],
+  },
   cactus: {
     petals: 8, petalScale: [0.012, 0.004, 0.007], petalOffset: 0.011, openTilt: 0.3,
     colors: ['#f06292', '#ff8a65'], center: '#ffe082', centerSize: 0.005, heightScale: 0.45, flowerScale: 0.9,

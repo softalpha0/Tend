@@ -4,7 +4,7 @@
  * provides it; elsewhere the setting is disabled.
  */
 
-export type VoiceCommand = 'plant' | 'water' | 'time' | 'end' | 'help';
+export type VoiceCommand = 'plant' | 'water' | 'time' | 'end' | 'help' | 'week';
 
 type Recognition = {
   continuous: boolean;
@@ -19,6 +19,7 @@ type Recognition = {
 
 const PHRASES: [VoiceCommand, RegExp][] = [
   ['end', /\b(end|stop|quit) (the )?session\b/],
+  ['week', /\b(this week|my week|summary)\b/],
   ['plant', /\b(plant|seed)\b/],
   ['water', /\b(water|start|begin)\b/],
   ['time', /\b(time|how long|left|remaining)\b/],

@@ -20,6 +20,8 @@ export interface FriendGarden {
   streak: number;
   plants: { species: SpeciesId; hue: number }[];
   sharedAt: number;
+  /** Friend code, for gardens that stay in sync. */
+  code?: string;
 }
 
 export interface TendState {
@@ -58,6 +60,11 @@ export interface TendState {
   /** Name shown on a shared garden. */
   name: string;
   friends: FriendGarden[];
+  /** Live sync: this device's public friend code and private secret. */
+  syncCode: string;
+  syncSecret: string;
+  /** Friend codes to follow live. */
+  friendCodes: string[];
   /** The first session is a short starter so new users see a bloom quickly. */
   starter: boolean;
   /** Which gestures the user has done at least once; the ghost hand stops showing them. */
@@ -94,6 +101,9 @@ function defaults(): TendState {
     plantedSpecies: 'daisy',
     name: '',
     friends: [],
+    syncCode: '',
+    syncSecret: '',
+    friendCodes: [],
     learned: { plant: false, water: false, time: false },
   };
 }
@@ -144,4 +154,28 @@ export function currentStreak(state: TendState, now = Date.now()): number {
   const today = localDay(now);
   const yesterday = localDay(now - 86_400_000);
   return state.lastCompleteDay === today || state.lastCompleteDay === yesterday ? state.streakDays : 0;
+}
+
+export interface WeekSummary {
+  sessions: number;
+  minutes: number;
+  streak: number;
+}
+
+/** Sessions and focused minutes over the last seven days. */
+export function weekSummary(state: TendState, now = Date.now()): WeekSummary {
+  const since = now - 7 * 86_400_000;
+  const week = state.garden.filter((p) => p.finishedAt >= since);
+  return {
+    sessions: week.length,
+    minutes: week.reduce((sum, p) => sum + p.minutes, 0),
+    streak: currentStreak(state, now),
+  };
+}
+
+export function formatMinutes(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m ? `${h} h ${m} min` : `${h} h`;
 }

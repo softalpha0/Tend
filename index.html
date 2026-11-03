@@ -4,7 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
     <meta name="description" content="Tend is a hands-first mixed reality focus timer. A plant grows on your real desk while you work." />
-    <link rel="icon" href="data:," />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <meta name="theme-color" content="#1f2a1d" />
     <title>Tend</title>
     <style>
       :root {
@@ -113,6 +116,23 @@
         background: #fff;
         color: var(--text);
       }
+      .week {
+        background: #eef5ec;
+        border-radius: 10px;
+        padding: 8px 12px;
+        color: var(--text);
+        font-weight: 600;
+        font-size: 14px;
+      }
+      .code-line {
+        margin: 10px 0 0;
+        font-size: 14px;
+      }
+      .code-line strong {
+        letter-spacing: 1px;
+        color: var(--text);
+      }
+      #add-friend,
       #share-garden {
         background: #e4efe1;
         color: var(--accent);
@@ -153,6 +173,7 @@
     <div id="landing">
       <h1>Tend</h1>
       <p>A plant grows on your real desk while you focus. Quit early and it wilts.</p>
+      <p id="week" class="week" hidden></p>
       <ol>
         <li>Pinch the seed and drop it in the pot.</li>
         <li>Hold your open palm over the pot to water it and start.</li>
@@ -163,7 +184,7 @@
         <label><input type="checkbox" id="ambient" /> Soft rain sound during a session</label>
         <label><input type="checkbox" id="spoken" /> Read cues aloud (start, halfway, time left)</label>
         <label><input type="checkbox" id="highContrast" /> Large, high-contrast labels</label>
-        <label><input type="checkbox" id="voice" /> Voice commands: "plant", "water", "time", "help"</label>
+        <label><input type="checkbox" id="voice" /> Voice commands: "plant", "water", "time", "this week", "help"</label>
       </div>
       <button id="enter-xr">Enter mixed reality</button>
       <button id="hide-landing">Try it here</button>
@@ -173,6 +194,13 @@
         <div class="share-row">
           <input type="text" id="garden-name" maxlength="20" placeholder="Your name" aria-label="Your name" />
           <button id="share-garden">Share my garden</button>
+        </div>
+        <div id="live-sync" hidden>
+          <p class="code-line">Your friend code: <strong id="my-code"></strong></p>
+          <div class="share-row">
+            <input type="text" id="friend-code" maxlength="12" placeholder="Friend's code" aria-label="Friend's code" />
+            <button id="add-friend">Add</button>
+          </div>
         </div>
         <p id="share-status"></p>
         <p id="friends-note" hidden></p>

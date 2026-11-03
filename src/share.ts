@@ -6,6 +6,7 @@ import { SPECIES, SpeciesId } from './species.js';
 import type { FriendGarden, TendState } from './state.js';
 
 const PARAM = 'garden';
+const FRIEND_PARAM = 'friend';
 const MAX_FRIENDS = 3;
 const MAX_SHARED_PLANTS = 8;
 
@@ -16,7 +17,8 @@ interface Payload {
   p: [number, number][]; // [species index, hue]
 }
 
-export function shareLink(state: TendState, streak: number): string {
+/** A share link carries a snapshot of the garden, and the friend code when live sync is on. */
+export function shareLink(state: TendState, streak: number, liveCode?: string): string {
   const payload: Payload = {
     v: 1,
     n: cleanName(state.name) || 'A friend',
@@ -29,8 +31,19 @@ export function shareLink(state: TendState, streak: number): string {
   const url = new URL(location.href);
   url.search = '';
   url.hash = '';
+  if (liveCode) url.searchParams.set(FRIEND_PARAM, liveCode);
   url.searchParams.set(PARAM, encode(JSON.stringify(payload)));
   return url.toString();
+}
+
+/** Reads a shared friend code from the page URL, if there is one. */
+export function takeFriendCode(): string | null {
+  const url = new URL(location.href);
+  const code = url.searchParams.get(FRIEND_PARAM);
+  if (!code) return null;
+  url.searchParams.delete(FRIEND_PARAM);
+  history.replaceState(null, '', url.toString());
+  return code;
 }
 
 /** Reads a garden from the page URL, if there is one, and removes it from the address bar. */

@@ -33,10 +33,12 @@ import {
   TimeRing,
 } from './models.js';
 import { setAmbient, sounds, speak } from './sound.js';
-import { nextUnlock, SPECIES, speciesById, unlockedSpecies } from './species.js';
+import { nextUnlock, seasonalSpecies, SPECIES, speciesById, unlockedSpecies } from './species.js';
 import {
   currentStreak,
   DURATION_CHOICES,
+  formatMinutes,
+  weekSummary,
   localDay,
   loadState,
   saveState,
@@ -46,6 +48,7 @@ import {
 } from './state.js';
 import { TargetRole, TendTarget } from './tend-components.js';
 import { VoiceCommand, VoiceCommands } from './voice.js';
+import { fetchGardens, MAX_LIVE_FRIENDS, normalizeCode, publishGarden, syncConfig } from './sync.js';
 
 // Desk detection: horizontal surfaces between these heights count as a desk.
 const DESK_MIN_HEIGHT = 0.45;
@@ -154,6 +157,9 @@ export class TendSystem extends createSystem({
   private ringFlashUntil = 0;
   private hintUntil = 0;
   private resumedUntil = 0;
+  private summaryUntil = 0;
+  private sync = syncConfig();
+  private publishTimer = 0;
   private halfwayPlayed = false;
   private twoMinutesPlayed = false;
   private lastSave = 0;
@@ -206,16 +212,22 @@ export class TendSystem extends createSystem({
           voice?: boolean;
           name?: string;
           clearFriends?: boolean;
+          addFriendCode?: string;
         }>
       ).detail;
       if (detail.ambient !== undefined) this.state.ambient = detail.ambient;
       if (detail.spoken !== undefined) this.state.spoken = detail.spoken;
       if (detail.highContrast !== undefined) this.applyContrast(detail.highContrast);
-      if (detail.name !== undefined) this.state.name = detail.name;
+      if (detail.name !== undefined && detail.name !== this.state.name) {
+        this.state.name = detail.name;
+        this.publishSoon();
+      }
       if (detail.clearFriends) {
         this.state.friends = [];
+        this.state.friendCodes = [];
         this.rebuildFriends();
       }
+      if (detail.addFriendCode) this.followCode(detail.addFriendCode);
       if (detail.voice !== undefined) {
         this.state.voice = detail.voice;
         this.voice.setEnabled(detail.voice);
@@ -224,6 +236,15 @@ export class TendSystem extends createSystem({
     };
     window.addEventListener('tend-settings', onSettings);
     this.cleanupFuncs.push(() => window.removeEventListener('tend-settings', onSettings));
+    if (this.sync) {
+      // Live shared gardens: publish ours, then keep friends' gardens fresh.
+      this.publishSoon();
+      void this.refreshFriends();
+      const timer = window.setInterval(() => {
+        if (document.visibilityState === 'visible') void this.refreshFriends();
+      }, 60_000);
+      this.cleanupFuncs.push(() => window.clearInterval(timer));
+    }
     const onHide = () => {
       if (document.visibilityState === 'hidden') saveState(this.state);
     };
@@ -318,6 +339,7 @@ export class TendSystem extends createSystem({
         this.anchorState = ok ? 'restored' : 'none';
       });
       if (this.state.voice) this.voice.setEnabled(true);
+      if (this.sync) void this.refreshFriends();
       this.xrStartTime = this.clock;
       this.firstCandidateTime = -1;
       this.table.visible = false;
@@ -649,6 +671,10 @@ export class TendSystem extends createSystem({
     this.updateWatering(delta, now);
 
     const palmUp = handList.some((h) => h.palmUp);
+    if (palmUp && !this.wasPalmUp && phase === 'empty' && this.state.garden.length > 0) {
+      this.summaryUntil = now + 5000;
+      if (this.state.spoken) speak(this.weekText(now));
+    }
     if (palmUp && !this.wasPalmUp && phase === 'growing') {
       if (!this.state.learned.time) {
         this.state.learned.time = true;
@@ -957,6 +983,7 @@ export class TendSystem extends createSystem({
     if (unlocked.length) s.species = unlocked[unlocked.length - 1].id;
     sounds.bloom();
     if (s.spoken) speak(this.unlockMessage ? `Your plant bloomed. ${this.unlockMessage}.` : 'Your plant bloomed. Well done.');
+    this.publishSoon();
     saveState(s);
   }
 
@@ -998,6 +1025,12 @@ export class TendSystem extends createSystem({
     for (const label of this.friendLabels) label.setHighContrast(on);
   }
 
+  private weekText(now: number): string {
+    const week = weekSummary(this.state, now);
+    const streak = week.streak > 1 ? ` · ${week.streak}-day streak` : '';
+    return `This week: ${week.sessions} session${week.sessions === 1 ? '' : 's'} · ${formatMinutes(week.minutes)}${streak}`;
+  }
+
   /** Voice alternatives for each gesture. */
   private onVoice(command: VoiceCommand): void {
     const now = Date.now();
@@ -1011,6 +1044,9 @@ export class TendSystem extends createSystem({
       speak(spokenRemaining(s.startedAt + s.durationMs - now));
     } else if (command === 'end' && s.phase === 'growing') {
       this.wilt(now);
+    } else if (command === 'week') {
+      this.summaryUntil = now + 5000;
+      speak(this.weekText(now));
     } else if (command === 'help') {
       speak(this.hintText(now, false) || 'Focus. Say time to hear how long is left.');
     }
@@ -1019,6 +1055,44 @@ export class TendSystem extends createSystem({
   private progress(now: number): number {
     const s = this.state;
     return s.durationMs > 0 ? clamp01((now - s.startedAt) / s.durationMs) : 0;
+  }
+
+  /** Publishes this garden shortly, so several quick changes send one update. */
+  private publishSoon(): void {
+    if (!this.sync) return;
+    window.clearTimeout(this.publishTimer);
+    this.publishTimer = window.setTimeout(() => {
+      void publishGarden(this.sync!, this.state, currentStreak(this.state)).catch(() => false);
+    }, 1000);
+  }
+
+  private followCode(text: string): void {
+    const code = normalizeCode(text);
+    if (!code || code === this.state.syncCode || this.state.friendCodes.includes(code)) return;
+    this.state.friendCodes = [code, ...this.state.friendCodes].slice(0, MAX_LIVE_FRIENDS);
+    saveState(this.state);
+    void this.refreshFriends();
+  }
+
+  /** Fetches followed gardens and replaces their snapshots with the live versions. */
+  private async refreshFriends(): Promise<void> {
+    if (!this.sync || this.state.friendCodes.length === 0) return;
+    let live;
+    try {
+      live = await fetchGardens(this.sync, this.state.friendCodes);
+    } catch {
+      return; // Offline or not set up: keep what we have.
+    }
+    const ordered = this.state.friendCodes.flatMap((code) => live.filter((g) => g.code === code));
+    if (import.meta.env.DEV) console.info(`[Tend] friends refreshed: ${live.map((g) => `${g.name}:${g.plants.length}`).join(', ')}`);
+    const linkOnly = this.state.friends.filter((f) => !f.code && !ordered.some((g) => g.name === f.name));
+    const next = [...ordered, ...linkOnly].slice(0, MAX_LIVE_FRIENDS);
+    const same = JSON.stringify(next.map(({ sharedAt: _, ...f }) => f)) ===
+      JSON.stringify(this.state.friends.map(({ sharedAt: _, ...f }) => f));
+    if (same) return;
+    this.state.friends = next;
+    saveState(this.state);
+    this.rebuildFriends();
   }
 
   /** Friends' gardens sit on the desk to the right of yours, each with a name label. */
@@ -1130,8 +1204,10 @@ export class TendSystem extends createSystem({
 
     // Species chip: shown before planting once there is more than one to choose from.
     const options = unlockedSpecies(s.bestStreak);
+    if (!options.some((o) => o.id === s.species)) s.species = options[0].id; // a season ended
     if (phase === 'empty' && options.length > 1) {
-      this.speciesChip.setText(speciesById(s.species).name);
+      const chosen = speciesById(s.species);
+      this.speciesChip.setText(chosen.season ? `${chosen.name} · ${chosen.season}` : chosen.name);
     } else {
       this.speciesChip.setText('');
     }
@@ -1150,13 +1226,22 @@ export class TendSystem extends createSystem({
     if (this.immersive && !this.placed) return 'Looking for your desk...';
     switch (s.phase) {
       case 'empty':
+        if (now < this.summaryUntil) return this.weekText(now);
         if (this.held?.kind === 'seed') return 'Drop it into the pot';
         if (this.held?.kind === 'pot') return 'Let go to set the pot down';
         if (s.garden.length > 0 && s.learned.plant) {
           const days = currentStreak(s, now);
           const streak = days > 1 ? ` · ${days}-day streak` : '';
           const next = nextUnlock(s.bestStreak);
-          const goal = next ? ` · ${next.name} at ${next.unlockStreak} days` : '';
+          const seasonal = seasonalSpecies();
+          const grownThisSeason =
+            seasonal && s.garden.some((p) => p.species === seasonal.id && now - p.finishedAt < 92 * 86_400_000);
+          const goal =
+            seasonal && !grownThisSeason
+              ? ` · ${seasonal.name} is in season`
+              : next
+                ? ` · ${next.name} at ${next.unlockStreak} days`
+                : '';
           return `Plant today's seed${streak}${goal}`;
         }
         return hands ? 'Pinch the seed and drop it in the pot' : 'Select the seed to plant it';

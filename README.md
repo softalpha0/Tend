@@ -39,7 +39,11 @@ day you come back. Quit early and the plant wilts.
 - **Clean pause and resume.** Taking the headset off or opening the system menu pauses the session. Only quitting on purpose (pinch and hold the pot for 2 seconds) wilts the plant.
 - **Something to come back to.** Finished plants stay in your desk garden, and a daily streak is shown when you return.
 - **Plants unlocked by streaks.** Daisy is available from the start; a 2-day streak unlocks Tulip, 3 days Sunflower, 5 days Lavender and 7 days Cactus flower. Unlocks are kept even if a streak breaks. Pinch the species chip beside the pot to choose your seed.
-- **Shared gardens.** Enter your name and tap *Share my garden* on the start card to get a link. When a friend opens it, your garden appears on their desk beside their own, labelled with your name and streak. No account or server is needed: the garden travels in the link.
+- **Seasonal plants.** Each season has its own plant anyone can grow while it lasts: Winter rose (Dec to Feb), Cherry blossom (Mar to May), Hibiscus (Jun to Aug) and Chrysanthemum (Sep to Nov).
+- **Weekly summary.** The start card shows your last seven days (sessions, minutes focused and streak). In mixed reality, turn a palm up while the pot is empty, or say "this week".
+- **Shared gardens.** Enter your name and tap *Share my garden* on the start card to get a link. When a friend opens it, your garden appears on their desk beside their own, labelled with your name and streak.
+- **Live shared gardens** (optional, with Supabase). Each person gets a friend code. Add a friend's code, or open their share link, and their garden stays up to date on your desk as they grow new plants. Without Supabase set up, sharing works by link and shows a snapshot.
+- **Installable app.** Tend has a web app manifest, icons and offline support, so it can be installed from the Quest Browser and opens straight into mixed reality.
 - **Onboarding without text walls.** A translucent ghost hand demonstrates each gesture until you have done it once. If the pot is out of view, an arrow points to it.
 - **Field-of-view aware.** Labels sit low and close to the pot so they stay inside a narrow field of view.
 - **Accessibility options** on the start card:
@@ -67,7 +71,9 @@ day you come back. Quit early and the plant wilts.
 | Models | Procedural Three.js geometry: no model files to download |
 | Sound | Web Audio synthesis and the Speech Synthesis API |
 | Saved progress | `localStorage`: garden, streak, unlocked plants, friends' gardens, settings, session timing |
-| Shared gardens | The garden is encoded into a share link (no server) and validated when opened |
+| Shared gardens | A snapshot encoded into the share link, validated when opened |
+| Live shared gardens | Supabase (Postgres): a public view and one function; see `supabase/schema.sql` |
+| Installable app | Web app manifest, icons and a service worker for offline start |
 | Hosting | GitHub Pages, built by GitHub Actions |
 
 ## Run it locally
@@ -88,6 +94,15 @@ Add `?minutes=0.2` to the URL for a 12-second session while testing.
 
 On Windows, if `npm run dev` stops with "Cannot establish this process birth
 identity", PowerShell is starting slowly. Retrying usually works.
+
+## Set up live shared gardens (optional)
+
+1. Create a free project at [supabase.com](https://supabase.com).
+2. In the dashboard, open **SQL Editor**, paste the contents of `supabase/schema.sql` and click **Run**.
+3. Open **Project Settings > API** and copy the **Project URL** and the **anon public** key.
+4. Paste them into `src/sync-config.ts`, then commit and push.
+
+The anon key is meant to be public. The database rules in `schema.sql` let anyone read the public part of a garden by its friend code, and only the device that created a garden can change it: each device keeps a random secret, and the database stores only its hash.
 
 ## Deploy
 
@@ -110,6 +125,10 @@ src/sound.ts          Synthesized cues, ambient rain, spoken announcements
 src/voice.ts          Optional voice commands
 src/species.ts        Plant species and their streak unlocks
 src/share.ts          Shared-garden links
+src/sync.ts           Live shared gardens (Supabase)
+src/sync-config.ts    Your Supabase project URL and anon key
+supabase/schema.sql   Database table, view and function for live sync
+public/manifest.webmanifest, public/sw.js, public/icons/   Installable app
 ```
 
 The `AGENTS.md`, `CLAUDE.md`, `.claude/`, `.cursor/`, `.codex/` and
@@ -124,9 +143,9 @@ starting October 29, 2026, with an AI coding assistant.
 ## What's next
 
 - Tune gesture thresholds from more real-headset playtests
-- Live shared gardens that update on their own, instead of by link
-- A weekly garden summary and seasonal plants
-- Package Tend as a Quest app for the Meta Horizon Store, targeted for Q1 2027
+- Build and sign the Quest app package (Trusted Web Activity) and submit to the Meta Horizon Store, targeted for Q1 2027
+- Visit a friend's garden together in shared mixed reality
+- Gentle daily reminders to keep a streak going
 
 ## License
 
