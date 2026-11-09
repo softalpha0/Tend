@@ -24,6 +24,7 @@ import {
   ConeGeometry,
 } from '@iwsdk/core';
 import type { SpeciesId } from './species.js';
+import { createContactShadow } from './effects.js';
 
 export const BLOOM_COLORS = ['#f28fb0', '#f6c453', '#a596f5', '#f4845f', '#6cc4e8', '#fdfdfd'];
 
@@ -35,6 +36,36 @@ export const SOIL_Y = POT_HEIGHT - 0.01;
 const GREEN = new Color('#4f9d4a');
 const DARK_GREEN = new Color('#3b7a38');
 const WILT_BROWN = new Color('#8a6a3c');
+
+/** Shared pot materials: every pot reuses them, so the garden stays cheap to draw. */
+const POT_MATERIALS = {
+  clay: new MeshStandardMaterial({ color: '#c96f4a', roughness: 0.82 }),
+  rim: new MeshStandardMaterial({ color: '#b5603e', roughness: 0.75 }),
+  glaze: new MeshStandardMaterial({ color: '#f1e3c8', roughness: 0.35, metalness: 0.05, side: DoubleSide }),
+  soilMaterial: null as MeshStandardMaterial | null,
+  soil(): MeshStandardMaterial {
+    if (!this.soilMaterial) {
+      // Speckled soil, drawn once into a small texture.
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 128;
+      const g = canvas.getContext('2d')!;
+      g.fillStyle = '#4a3020';
+      g.fillRect(0, 0, 128, 128);
+      for (let i = 0; i < 900; i++) {
+        const shade = Math.random();
+        g.fillStyle = shade < 0.5 ? 'rgba(30,18,10,0.55)' : shade < 0.85 ? 'rgba(110,78,52,0.5)' : 'rgba(170,140,100,0.45)';
+        const r = Math.random() * 1.8 + 0.4;
+        g.beginPath();
+        g.arc(Math.random() * 128, Math.random() * 128, r, 0, Math.PI * 2);
+        g.fill();
+      }
+      const texture = new CanvasTexture(canvas);
+      texture.colorSpace = SRGBColorSpace;
+      this.soilMaterial = new MeshStandardMaterial({ map: texture, roughness: 1 });
+    }
+    return this.soilMaterial;
+  },
+};
 
 export function createPot(): Group {
   const pot = new Group();
@@ -49,29 +80,29 @@ export function createPot(): Group {
     new Vector2(POT_RADIUS, POT_HEIGHT),
     new Vector2(POT_RADIUS - 0.006, POT_HEIGHT),
   ];
-  const body = new Mesh(
-    new LatheGeometry(profile, 32),
-    new MeshStandardMaterial({ color: '#c96f4a', roughness: 0.85 }),
-  );
+  const body = new Mesh(new LatheGeometry(profile, 40), POT_MATERIALS.clay);
   body.name = 'PotBody';
   pot.add(body);
 
-  const rim = new Mesh(
-    new TorusGeometry(POT_RADIUS - 0.002, 0.004, 8, 32),
-    new MeshStandardMaterial({ color: '#b5603e', roughness: 0.8 }),
+  // A glazed band near the top, like a hand-painted terracotta pot.
+  const band = new Mesh(
+    new CylinderGeometry(POT_RADIUS - 0.0035, POT_RADIUS - 0.0055, 0.012, 40, 1, true),
+    POT_MATERIALS.glaze,
   );
+  band.position.y = POT_HEIGHT - 0.022;
+  pot.add(band);
+
+  const rim = new Mesh(new TorusGeometry(POT_RADIUS - 0.002, 0.0042, 10, 40), POT_MATERIALS.rim);
   rim.rotation.x = Math.PI / 2;
   rim.position.y = POT_HEIGHT;
   pot.add(rim);
 
-  const soil = new Mesh(
-    new CircleGeometry(POT_RADIUS - 0.006, 32),
-    new MeshStandardMaterial({ color: '#4a3020', roughness: 1 }),
-  );
+  const soil = new Mesh(new CircleGeometry(POT_RADIUS - 0.006, 32), POT_MATERIALS.soil());
   soil.rotation.x = -Math.PI / 2;
   soil.position.y = SOIL_Y;
   pot.add(soil);
 
+  pot.add(createContactShadow(POT_RADIUS * 1.55));
   return pot;
 }
 
@@ -166,7 +197,15 @@ const LOOKS: Record<SpeciesId, PlantLook> = {
 
 /** A plant that can be posed anywhere between sprout, full bloom and wilted. */
 export class Plant extends Group {
+  private swayPivot = new Group();
   private stemPivot = new Group();
+  /** Spring state for a touch: bend angles and their velocities. */
+  private bendX = 0;
+  private bendZ = 0;
+  private bendVX = 0;
+  private bendVZ = 0;
+  private windPhase = Math.random() * Math.PI * 2;
+  private growthNow = 0;
   private stem: Mesh;
   private body: Mesh | null = null;
   private leaves: Group[] = [];
@@ -191,7 +230,8 @@ export class Plant extends Group {
     this.bloomColor.set(look.colors[hue % look.colors.length]);
     this.petalMaterial = new MeshStandardMaterial({ color: this.bloomColor.clone(), roughness: 0.5 });
 
-    this.add(this.stemPivot);
+    this.add(this.swayPivot);
+    this.swayPivot.add(this.stemPivot);
     const stemGeometry = new CylinderGeometry(0.0035, 0.0055, 1, 8);
     stemGeometry.translate(0, 0.5, 0);
     this.stem = new Mesh(stemGeometry, this.greenMaterial);
@@ -249,6 +289,39 @@ export class Plant extends Group {
     this.pose(0, 0, 0);
   }
 
+  /** The flower colour, for effects that match it. */
+  get tint(): Color {
+    return this.bloomColor;
+  }
+
+  /** Height of the plant's top above the soil, in metres. */
+  get topHeight(): number {
+    return (0.012 + 0.15 * easeOut(this.growthNow)) * this.look.heightScale;
+  }
+
+  /** Bend the plant away from a touch, in its local x/z direction. */
+  push(dx: number, dz: number, strength = 1): void {
+    const len = Math.hypot(dx, dz) || 1;
+    this.bendVZ -= (dx / len) * 6 * strength;
+    this.bendVX += (dz / len) * 6 * strength;
+  }
+
+  /** Breeze sway plus the springy return from a touch. Call once per frame. */
+  updateMotion(delta: number, time: number, calm = 1): void {
+    const dt = Math.min(delta, 0.05);
+    // Damped spring back to upright.
+    this.bendVX += (-90 * this.bendX - 7 * this.bendVX) * dt;
+    this.bendVZ += (-90 * this.bendZ - 7 * this.bendVZ) * dt;
+    this.bendX += this.bendVX * dt;
+    this.bendZ += this.bendVZ * dt;
+    const breeze = 0.035 * calm;
+    this.swayPivot.rotation.x = this.bendX + Math.sin(time * 1.3 + this.windPhase) * breeze;
+    this.swayPivot.rotation.z = this.bendZ + Math.sin(time * 0.9 + this.windPhase * 1.7) * breeze * 0.8;
+    for (let i = 0; i < this.leaves.length; i++) {
+      this.leaves[i].rotation.x = Math.sin(time * 2.3 + this.windPhase + i) * 0.08 * calm + this.bendX * 0.6;
+    }
+  }
+
   /**
    * @param growth 0 = tiny sprout, 1 = fully grown
    * @param bloom 0 = closed bud, 1 = open flower
@@ -256,6 +329,7 @@ export class Plant extends Group {
    */
   pose(growth: number, bloom: number, wilt: number): void {
     const look = this.look;
+    this.growthNow = growth;
     const height = (0.012 + 0.15 * easeOut(growth)) * look.heightScale;
     this.stem.scale.y = height;
     if (this.body) {
@@ -266,7 +340,7 @@ export class Plant extends Group {
 
     for (let i = 0; i < this.leaves.length; i++) {
       const pivot = this.leaves[i];
-      const appear = clamp01((growth - i / 7) * 5);
+      const appear = backOut(clamp01((growth - i / 7) * 5));
       pivot.position.y = height * (0.25 + 0.6 * (i / this.leaves.length));
       pivot.scale.setScalar(Math.max(appear, 0.0001));
       pivot.rotation.z = 0.45 - wilt * 1.1;
@@ -275,6 +349,8 @@ export class Plant extends Group {
     const budSize = clamp01((growth - 0.8) * 5);
     this.flower.visible = budSize > 0;
     this.flower.position.y = height;
+    // Open flowers turn their faces toward the viewer (the pot's +Z side).
+    this.flower.rotation.x = bloom * 0.55 * (1 - wilt);
     this.flower.scale.setScalar(
       Math.max(0.35 + 0.65 * bloom, 0.0001) * Math.max(budSize, 0.0001) * look.flowerScale,
     );
@@ -485,6 +561,13 @@ function roundRect(g: CanvasRenderingContext2D, x: number, y: number, w: number,
 
 export function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
+/** Overshoots slightly before settling, so new leaves pop out. */
+export function backOut(t: number): number {
+  const c = 1.9;
+  const x = t - 1;
+  return 1 + (c + 1) * x * x * x + c * x * x;
 }
 
 export function easeOut(t: number): number {

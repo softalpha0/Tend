@@ -39,6 +39,7 @@ day you come back. Quit early and the plant wilts.
 - **Clean pause and resume.** Taking the headset off or opening the system menu pauses the session. Only quitting on purpose (pinch and hold the pot for 2 seconds) wilts the plant.
 - **Something to come back to.** Finished plants stay in your desk garden, and a daily streak is shown when you return.
 - **Plants unlocked by streaks.** Daisy is available from the start; a 2-day streak unlocks Tulip, 3 days Sunflower, 5 days Lavender and 7 days Cactus flower. Unlocks are kept even if a streak breaks. Pinch the species chip beside the pot to choose your seed.
+- **A living garden.** Plants sway in a gentle breeze, and touching one with your fingertip makes it bend away and spring back with a rustle and a few sparkles. Butterflies live in your garden (one per streak day, up to three) and visit the flowers; hold your palm up and one lands on your hand. A bloom releases a burst of golden pollen, glowing motes drift up from the soil while you focus, and soft contact shadows ground every pot on your real desk.
 - **Seasonal plants.** Each season has its own plant anyone can grow while it lasts: Winter rose (Dec to Feb), Cherry blossom (Mar to May), Hibiscus (Jun to Aug) and Chrysanthemum (Sep to Nov).
 - **Weekly summary.** The start card shows your last seven days (sessions, minutes focused and streak). In mixed reality, turn a palm up while the pot is empty, or say "this week".
 - **Shared gardens.** Enter your name and tap *Share my garden* on the start card to get a link. When a friend opens it, your garden appears on their desk beside their own, labelled with your name and streak.
@@ -121,6 +122,7 @@ src/hands.ts          Hand joints each frame: pinch, palm up, palm position
 src/anchor.ts         Persistent spatial anchor for the pot
 src/models.ts         Procedural pot, seed, plant, time ring, labels, ghost hand, finder arrow
 src/state.ts          Saved progress and settings
+src/effects.ts        Contact shadows, focus motes, bloom burst, ripples, butterflies
 src/sound.ts          Synthesized cues, ambient rain, spoken announcements
 src/voice.ts          Optional voice commands
 src/species.ts        Plant species and their streak unlocks

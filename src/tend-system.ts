@@ -16,6 +16,7 @@ import {
   XRPlane,
 } from '@iwsdk/core';
 import { PotAnchor } from './anchor.js';
+import { Burst, Butterfly, Motes, Ripples } from './effects.js';
 import { anyHandTracked, handList, HandState } from './hands.js';
 import {
   clamp01,
@@ -126,6 +127,21 @@ export class TendSystem extends createSystem({
   private seedBody!: Mesh<SphereGeometry, MeshStandardMaterial>;
   private friendsGroup!: Group;
   private friendLabels: Label[] = [];
+  // Living garden: effects, butterflies and plants that respond to touch.
+  private motes!: Motes;
+  private burst!: Burst;
+  private sparkle!: Burst;
+  private ripples!: Ripples;
+  private butterflyGroup!: Group;
+  private butterflies: { fly: Butterfly; nextMove: number; onHand: boolean }[] = [];
+  private gardenPlants: Plant[] = [];
+  private friendPlants: Plant[] = [];
+  private touchable: Plant[] = [];
+  private lastTouch = new WeakMap<Plant, number>();
+  private lastRustleSound = 0;
+  private handHolding: HandState | null = null;
+  private scratchScale = new Vector3();
+  private tipLocal = new Vector3();
   private unlockMessage = '';
   private droplets!: Droplets;
   private garden!: Group;
@@ -316,6 +332,18 @@ export class TendSystem extends createSystem({
 
     this.ghost = new GhostHand();
     this.root.add(this.ghost);
+
+    this.motes = new Motes();
+    this.motes.position.y = SOIL_Y;
+    this.root.add(this.motes);
+    this.burst = new Burst(150);
+    this.sparkle = new Burst(24);
+    this.root.add(this.burst, this.sparkle);
+    this.ripples = new Ripples();
+    this.ripples.position.y = SOIL_Y + 0.001;
+    this.root.add(this.ripples);
+    this.butterflyGroup = new Group();
+    this.root.add(this.butterflyGroup);
 
     this.finder = createFinderArrow();
     this.world.createTransformEntity(this.finder, { persistent: true });
@@ -585,6 +613,7 @@ export class TendSystem extends createSystem({
     this.updateSound(now);
     this.syncVisuals(now);
     this.updateGhost();
+    this.updateLife(delta, now);
     this.updateFinder();
   }
 
@@ -696,6 +725,145 @@ export class TendSystem extends createSystem({
     if (want !== this.ambientOn) {
       this.ambientOn = want;
       setAmbient(want);
+    }
+  }
+
+  /** Plants sway and react to touch; motes, ripples, bursts and butterflies animate. */
+  private updateLife(delta: number, now: number): void {
+    const t = this.clock;
+    const s = this.state;
+    if (!this.droplets.visible) this.ripples.active = false;
+
+    this.touchable.length = 0;
+    if (this.plant.visible) this.touchable.push(this.plant);
+    for (const p of this.gardenPlants) this.touchable.push(p);
+    for (const p of this.friendPlants) this.touchable.push(p);
+    const wilting = s.phase === 'wilted' ? 0.2 : 1;
+    for (const p of this.touchable) p.updateMotion(delta, t, p === this.plant ? wilting : 1);
+
+    // Brushing a plant with a fingertip makes it bend away and spring back.
+    if (this.immersive) {
+      for (const hand of handList) {
+        if (!hand.tracked) continue;
+        for (const p of this.touchable) this.touchPlant(p, hand.indexTip, now);
+      }
+    }
+
+    const growing = s.phase === 'growing';
+    this.motes.update(t, growing ? 0.25 + 0.75 * this.progress(now) : 0);
+    this.ripples.update(t);
+    this.burst.update(delta);
+    this.sparkle.update(delta);
+    this.updateButterflies(delta, now);
+  }
+
+  private touchPlant(p: Plant, tip: Vector3, now: number): void {
+    p.getWorldPosition(this.temp2);
+    p.getWorldScale(this.scratchScale);
+    const scale = this.scratchScale.x;
+    const dx = tip.x - this.temp2.x;
+    const dz = tip.z - this.temp2.z;
+    const dy = tip.y - this.temp2.y;
+    const reach = 0.035 * scale + 0.015;
+    // Includes the flower head above the stem top.
+    if (dx * dx + dz * dz > reach * reach || dy < 0 || dy > p.topHeight * scale + 0.045) return;
+    if (now - (this.lastTouch.get(p) ?? 0) < 450) return;
+    this.lastTouch.set(p, now);
+    this.tipLocal.copy(tip);
+    p.worldToLocal(this.tipLocal);
+    p.push(this.tipLocal.x, this.tipLocal.z, 1);
+    if (import.meta.env.DEV) console.info(`[Tend] touched a ${p.species}`);
+    this.tipLocal.copy(tip);
+    this.root.worldToLocal(this.tipLocal);
+    this.sparkle.trigger(this.tipLocal, p.tint, 0.25);
+    if (now - this.lastRustleSound > 250) {
+      this.lastRustleSound = now;
+      sounds.rustle();
+    }
+  }
+
+  /** One butterfly per streak day (up to 3), once there is a garden. */
+  private wantedButterflies(now: number): number {
+    if (this.state.garden.length === 0) return 0;
+    return Math.min(3, Math.max(1, currentStreak(this.state, now)));
+  }
+
+  private spawnButterfly(at: Vector3): void {
+    if (this.butterflies.length >= 3) return;
+    const fly = new Butterfly(this.state.garden.length + this.butterflies.length);
+    fly.position.copy(at);
+    fly.target.copy(at).add(new Vector3(0.05, 0.08, 0.02));
+    this.butterflyGroup.add(fly);
+    this.butterflies.push({ fly, nextMove: this.clock + 2, onHand: false });
+  }
+
+  /** A flower top to visit, in root space. */
+  private randomFlower(out: Vector3): Vector3 {
+    const options = this.gardenPlants.length ? this.gardenPlants : [this.plant];
+    const p = options[Math.floor(Math.random() * options.length)];
+    out.set(0, p.topHeight + 0.006, 0);
+    p.localToWorld(out);
+    return this.root.worldToLocal(out);
+  }
+
+  private updateButterflies(delta: number, now: number): void {
+    const wanted = this.wantedButterflies(now);
+    while (this.butterflies.length < wanted) {
+      this.randomFlower(this.temp);
+      this.spawnButterfly(this.temp);
+    }
+    while (this.butterflies.length > wanted) {
+      const gone = this.butterflies.pop()!;
+      this.butterflyGroup.remove(gone.fly);
+    }
+
+    // Hold a palm up (outside a session) and the nearest butterfly lands on it.
+    let palm: HandState | null = null;
+    if (this.immersive && this.state.phase !== 'growing') {
+      palm = handList.find((h) => h.palmUp) ?? null;
+    }
+    if (palm !== this.handHolding) {
+      for (const b of this.butterflies) {
+        if (b.onHand) {
+          b.onHand = false;
+          b.fly.resting = false;
+          b.nextMove = 0;
+        }
+      }
+      this.handHolding = palm;
+      if (palm && this.butterflies.length) {
+        this.tipLocal.copy(palm.palmCenter);
+        this.root.worldToLocal(this.tipLocal);
+        let nearest = this.butterflies[0];
+        for (const b of this.butterflies) {
+          if (b.fly.position.distanceTo(this.tipLocal) < nearest.fly.position.distanceTo(this.tipLocal)) nearest = b;
+        }
+        nearest.onHand = true;
+        nearest.fly.resting = false;
+      }
+    }
+
+    const growing = this.state.phase === 'growing';
+    for (const b of this.butterflies) {
+      if (b.onHand && palm) {
+        b.fly.target.copy(palm.palmCenter);
+        b.fly.target.y += 0.015;
+        this.root.worldToLocal(b.fly.target);
+        const arriving = b.fly.position.distanceTo(b.fly.target) < 0.02;
+        if (arriving && !b.fly.resting) {
+          b.fly.resting = true;
+          sounds.land();
+          if (import.meta.env.DEV) console.info('[Tend] butterfly landed on hand');
+        }
+      } else if (this.clock > b.nextMove) {
+        // Visit another flower; calmer and less often during a focus session.
+        this.randomFlower(b.fly.target);
+        b.fly.resting = false;
+        b.nextMove = this.clock + (growing ? 18 + Math.random() * 14 : 5 + Math.random() * 6);
+      } else if (!b.fly.resting && b.fly.position.distanceTo(b.fly.target) < 0.012) {
+        b.fly.resting = true;
+      }
+      b.fly.update(delta, this.clock);
     }
   }
 
@@ -848,6 +1016,7 @@ export class TendSystem extends createSystem({
     if (pouring) {
       this.waterHold += delta;
       this.droplets.visible = true;
+      this.ripples.active = true;
       this.droplets.animate(this.clock, pouring.palmCenter.y - this.soilWorld.y);
       if (this.waterHold >= WATER_HOLD_S) {
         this.startSession(now);
@@ -884,6 +1053,8 @@ export class TendSystem extends createSystem({
         this.startSession(now);
       } else if (phase === 'growing') {
         this.ringFlashUntil = now + 4000;
+        this.plant.push(Math.random() - 0.5, Math.random() - 0.5, 0.8);
+        sounds.rustle();
       }
     }
   }
@@ -982,6 +1153,10 @@ export class TendSystem extends createSystem({
       : '';
     if (unlocked.length) s.species = unlocked[unlocked.length - 1].id;
     sounds.bloom();
+    this.temp.set(0, SOIL_Y + this.plant.topHeight, 0);
+    this.burst.trigger(this.temp, this.plant.tint, 1);
+    // A butterfly emerges from the new flower.
+    this.spawnButterfly(this.temp);
     if (s.spoken) speak(this.unlockMessage ? `Your plant bloomed. ${this.unlockMessage}.` : 'Your plant bloomed. Well done.');
     this.publishSoon();
     saveState(s);
@@ -1102,6 +1277,7 @@ export class TendSystem extends createSystem({
       disposeTree(child);
     }
     this.friendLabels = [];
+    this.friendPlants = [];
     this.state.friends.forEach((friend, f) => {
       const group = new Group();
       group.position.set(0.3 + f * 0.24, 0, -0.04);
@@ -1114,6 +1290,7 @@ export class TendSystem extends createSystem({
         potted.scale.setScalar(0.4);
         potted.position.set(((i % 4) - 1.5) * 0.05, 0, Math.floor(i / 4) * -0.06);
         group.add(potted);
+        this.friendPlants.push(plant);
       });
       const label = new Label(0.17);
       const streak = friend.streak > 1 ? ` · ${friend.streak}-day streak` : '';
@@ -1131,6 +1308,7 @@ export class TendSystem extends createSystem({
       this.garden.remove(child);
       disposeTree(child);
     }
+    this.gardenPlants = [];
     const items = this.state.garden.slice(-GARDEN_MAX);
     items.forEach((item, i) => {
       // Each finished plant sits in its own small pot.
@@ -1145,6 +1323,7 @@ export class TendSystem extends createSystem({
       const radius = 0.14 + (i % 2) * 0.05;
       potted.position.set(Math.sin(angle) * radius, 0, Math.cos(angle) * radius);
       this.garden.add(potted);
+      this.gardenPlants.push(plant);
     });
   }
 

@@ -69,7 +69,36 @@ export const sounds = {
     tone(311, 0.22, 0.8, 0.12, 'triangle');
   },
   select: () => tone(880, 0, 0.08, 0.07),
+  /** A butterfly lands on your hand. */
+  land: () => {
+    tone(1319, 0, 0.25, 0.05);
+    tone(1760, 0.07, 0.3, 0.04);
+  },
+  /** Leaves brushed by a fingertip. */
+  rustle: () => noise(0.18, 2400, 0.05),
 };
+
+function noise(length: number, cutoff: number, volume: number): void {
+  const ac = context();
+  if (!ac) return;
+  const frames = Math.floor(ac.sampleRate * length);
+  const buffer = ac.createBuffer(1, frames, ac.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < frames; i++) {
+    const env = Math.sin((Math.PI * i) / frames);
+    data[i] = (Math.random() * 2 - 1) * env * (0.5 + 0.5 * Math.random());
+  }
+  const source = ac.createBufferSource();
+  source.buffer = buffer;
+  const filter = ac.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = cutoff;
+  filter.Q.value = 0.8;
+  const gain = ac.createGain();
+  gain.gain.value = volume;
+  source.connect(filter).connect(gain).connect(ac.destination);
+  source.start();
+}
 
 // --- Ambient bed: brown noise through a low-pass filter, like distant rain.
 

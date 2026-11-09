@@ -14,6 +14,8 @@ export interface HandState {
   pinchEnd: boolean;
   /** Midpoint between thumb tip and index tip, in world space. */
   pinchPoint: Vector3;
+  /** Index fingertip, in world space (for touching plants). */
+  indexTip: Vector3;
   /** Centre of the palm, in world space. */
   palmCenter: Vector3;
   /** Unit vector pointing out of the palm side of the hand, in world space. */
@@ -29,6 +31,7 @@ function makeHand(): HandState {
     pinchStart: false,
     pinchEnd: false,
     pinchPoint: new Vector3(),
+    indexTip: new Vector3(),
     palmCenter: new Vector3(),
     palmNormal: new Vector3(0, -1, 0),
     palmUp: false,
@@ -93,6 +96,7 @@ export class HandGestureSystem extends createSystem({}) {
         this.thumb.set(tp.x, tp.y, tp.z).applyMatrix4(origin.matrixWorld);
         this.index.set(ip.x, ip.y, ip.z).applyMatrix4(origin.matrixWorld);
         state.pinchPoint.copy(this.thumb).add(this.index).multiplyScalar(0.5);
+        state.indexTip.copy(this.index);
 
         const pp = palmPose.transform.position;
         state.palmCenter.set(pp.x, pp.y, pp.z).applyMatrix4(origin.matrixWorld);
