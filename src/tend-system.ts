@@ -62,6 +62,12 @@ const NOT_A_DESK = ['couch', 'bed', 'floor', 'ceiling', 'shelf', 'storage'];
 const DESK_SETTLE_S = 1.2;
 /** Give up on plane detection and place the pot in front of the user. */
 const DESK_TIMEOUT_S = 6;
+/** Only surfaces whose nearest edge is within this reach of the user are used (metres, horizontal). */
+const DESK_REACH = 1.0;
+/** Beyond this distance from the user the pot counts as out of reach. */
+const POT_FAR = 1.0;
+/** A saved anchor further than this from the user is ignored, and the pot is placed afresh. */
+const ANCHOR_MAX_DISTANCE = 1.3;
 /** Keep the pot at least this far from the desk edge. */
 const DESK_EDGE_MARGIN = 0.2;
 
@@ -173,6 +179,9 @@ export class TendSystem extends createSystem({
   private ringFlashUntil = 0;
   private hintUntil = 0;
   private resumedUntil = 0;
+  private movedHintUntil = 0;
+  private lastSummon = -10;
+  private summonChip!: Label;
   private summaryUntil = 0;
   private sync = syncConfig();
   private publishTimer = 0;
@@ -229,6 +238,7 @@ export class TendSystem extends createSystem({
           name?: string;
           clearFriends?: boolean;
           addFriendCode?: string;
+          resetPot?: boolean;
         }>
       ).detail;
       if (detail.ambient !== undefined) this.state.ambient = detail.ambient;
@@ -244,6 +254,11 @@ export class TendSystem extends createSystem({
         this.rebuildFriends();
       }
       if (detail.addFriendCode) this.followCode(detail.addFriendCode);
+      if (detail.resetPot) {
+        this.potAnchor.forget();
+        this.state.deskOffset = null;
+        if (this.immersive) this.summonPot();
+      }
       if (detail.voice !== undefined) {
         this.state.voice = detail.voice;
         this.voice.setEnabled(detail.voice);
@@ -345,6 +360,11 @@ export class TendSystem extends createSystem({
     this.butterflyGroup = new Group();
     this.root.add(this.butterflyGroup);
 
+    this.summonChip = new Label(0.17, { pill: true });
+    const summonEntity = this.world.createTransformEntity(this.summonChip, { persistent: true });
+    summonEntity.addComponent(RayInteractable);
+    summonEntity.addComponent(TendTarget, { role: TargetRole.Summon });
+
     this.finder = createFinderArrow();
     this.world.createTransformEntity(this.finder, { persistent: true });
 
@@ -389,11 +409,19 @@ export class TendSystem extends createSystem({
     if (this.anchorState === 'restoring' && waited < ANCHOR_WAIT_S) return;
     if (this.anchorState === 'restored') {
       if (this.followAnchor()) {
-        this.placed = true;
-        console.info('[Tend] pot restored from its saved anchor');
+        if (this.potDistance() <= ANCHOR_MAX_DISTANCE) {
+          this.placed = true;
+          console.info('[Tend] pot restored from its saved anchor');
+          return;
+        }
+        // Saved somewhere the user can't reach from here: place it afresh.
+        console.info('[Tend] saved anchor is out of reach; placing the pot again');
+        this.potAnchor.release();
+        this.anchorState = 'none';
+        this.state.deskOffset = null;
+      } else if (waited < ANCHOR_WAIT_S) {
         return;
       }
-      if (waited < ANCHOR_WAIT_S) return;
     }
     this.tryPlaceOnDesk();
     if (this.placed) this.anchorDirty = true;
@@ -449,13 +477,19 @@ export class TendSystem extends createSystem({
     this.camera.lookAt(0, PREVIEW_TABLE_HEIGHT + 0.14, -0.45);
   }
 
-  private tryPlaceOnDesk(): void {
+  /**
+   * Choose the desk: a horizontal surface at desk height whose nearest edge is
+   * within arm's reach, preferring the one in front of the user. With `now`,
+   * place immediately (used when the user asks for the pot to be brought over).
+   */
+  private tryPlaceOnDesk(now = false): void {
     const elapsed = this.clock - this.xrStartTime;
     this.player.head.getWorldPosition(this.headWorld);
     this.horizontalForward(this.headForward);
 
     let best: Object3D | null = null;
     let bestScore = Infinity;
+    let bestPolygon: { x: number; z: number }[] = [];
     for (const entity of this.queries.planes.entities) {
       const plane = entity.getValue(XRPlane, '_plane') as XRPlane | undefined;
       const object = entity.object3D;
@@ -464,44 +498,82 @@ export class TendSystem extends createSystem({
       if (this.temp.y < DESK_MIN_HEIGHT || this.temp.y > DESK_MAX_HEIGHT) continue;
       const label = (plane as XRPlane & { semanticLabel?: string }).semanticLabel ?? '';
       if (NOT_A_DESK.includes(label)) continue;
-      let score = Math.hypot(this.temp.x - this.headWorld.x, this.temp.z - this.headWorld.z);
-      if (label === 'table' || label === 'desk') score -= 3;
-      if (this.temp.y < DESK_TYPICAL_MIN || this.temp.y > DESK_TYPICAL_MAX) score += 1.5;
+      const polygon = plane.polygon.map((p) => ({ x: p.x, z: p.z }));
+      // Distance from the user to the surface's nearest edge, not its centre:
+      // a big desk can be centred far away and still be right in front of you.
+      object.updateMatrixWorld(true);
+      this.temp2.copy(this.headWorld);
+      object.worldToLocal(this.temp2);
+      const near = nearestPointOnPolygon(this.temp2.x, this.temp2.z, polygon);
+      if (near.distance > DESK_REACH) continue;
+      this.temp2.set(near.x, 0, near.z);
+      object.localToWorld(this.temp2);
+      let score = near.distance;
       // Prefer the surface the user is facing.
-      this.temp2.set(this.temp.x - this.headWorld.x, 0, this.temp.z - this.headWorld.z);
-      if (this.temp2.lengthSq() > 1e-4) score += this.temp2.normalize().angleTo(this.headForward) * 0.6;
+      this.temp.set(this.temp2.x - this.headWorld.x, 0, this.temp2.z - this.headWorld.z);
+      if (this.temp.lengthSq() > 1e-4) score += this.temp.normalize().angleTo(this.headForward) * 0.35;
+      object.getWorldPosition(this.temp);
+      if (this.temp.y < DESK_TYPICAL_MIN || this.temp.y > DESK_TYPICAL_MAX) score += 0.8;
+      if (label === 'table' || label === 'desk') score -= 0.15; // a tie-breaker only
       if (score < bestScore) {
         bestScore = score;
         best = object;
-        this.deskPolygon = plane.polygon.map((p) => ({ x: p.x, z: p.z }));
+        bestPolygon = polygon;
       }
     }
 
     if (best && this.firstCandidateTime < 0) this.firstCandidateTime = this.clock;
-    const settled = best && this.clock - this.firstCandidateTime > DESK_SETTLE_S;
+    const settled = best && (now || this.clock - this.firstCandidateTime > DESK_SETTLE_S);
     if (best && settled) {
       best.getWorldPosition(this.temp);
       console.info(`[Tend] desk chosen at height ${this.temp.y.toFixed(2)} m`);
       this.desk = best;
-      this.placeOnDesk();
-    } else if (elapsed > DESK_TIMEOUT_S) {
+      this.deskPolygon = bestPolygon;
+      this.placeOnDesk(!now);
+    } else if (now || elapsed > DESK_TIMEOUT_S) {
       this.placeInFrontOfUser();
     }
   }
 
-  private placeOnDesk(): void {
+  /** Horizontal distance from the user's head to the pot. */
+  private potDistance(): number {
+    this.player.head.getWorldPosition(this.headWorld);
+    return Math.hypot(this.root.position.x - this.headWorld.x, this.root.position.z - this.headWorld.z);
+  }
+
+  /** "Bring the pot here": re-place the pot on the nearest reachable surface. */
+  private summonPot(): void {
+    if (this.clock - this.lastSummon < 1) return;
+    this.lastSummon = this.clock;
+    this.potAnchor.release();
+    this.held = null;
+    this.desk = null;
+    this.state.deskOffset = null;
+    this.tryPlaceOnDesk(true);
+    this.anchorDirty = true;
+    this.movedHintUntil = Date.now() + 3000;
+    sounds.select();
+    saveState(this.state);
+  }
+
+  private placeOnDesk(useSaved = true): void {
     const desk = this.desk!;
     desk.updateMatrixWorld(true);
-    let local: { x: number; z: number } | null = null;
-    const saved = this.state.deskOffset;
-    if (saved && this.insideDesk(saved[0], saved[1], DESK_EDGE_MARGIN * 0.5)) {
-      local = { x: saved[0], z: saved[1] };
-    } else {
-      local = this.defaultDeskSpot();
-    }
+    const saved = useSaved ? this.state.deskOffset : null;
+    const local =
+      saved && this.insideDesk(saved[0], saved[1], DESK_EDGE_MARGIN * 0.5)
+        ? { x: saved[0], z: saved[1] }
+        : this.defaultDeskSpot();
     this.temp.set(local.x, 0, local.z);
     desk.localToWorld(this.temp);
     this.root.position.copy(this.temp);
+    if (saved && this.potDistance() > POT_FAR) {
+      // The saved spot is out of reach from where the user sits now.
+      const spot = this.defaultDeskSpot();
+      this.temp.set(spot.x, 0, spot.z);
+      desk.localToWorld(this.temp);
+      this.root.position.copy(this.temp);
+    }
     this.faceUser();
     this.placed = true;
   }
@@ -614,6 +686,7 @@ export class TendSystem extends createSystem({
     this.syncVisuals(now);
     this.updateGhost();
     this.updateLife(delta, now);
+    this.updateSummonChip();
     this.updateFinder();
   }
 
@@ -669,6 +742,10 @@ export class TendSystem extends createSystem({
 
     for (const hand of handList) {
       if (!hand.pinchStart || this.held) continue;
+      if (this.summonChip.visible && hand.pinchPoint.distanceTo(this.summonChip.position) < 0.08) {
+        this.summonPot();
+        continue;
+      }
       if (phase === 'empty' && hand.pinchPoint.distanceTo(this.seedWorld) < SEED_GRAB_RADIUS) {
         this.held = { kind: 'seed', hand };
         sounds.pickUp();
@@ -726,6 +803,18 @@ export class TendSystem extends createSystem({
       this.ambientOn = want;
       setAmbient(want);
     }
+  }
+
+  /** When the pot is out of reach, a "Bring the pot here" button floats in front of the user. */
+  private updateSummonChip(): void {
+    const show = this.immersive && this.placed && this.held?.kind !== 'pot' && this.potDistance() > POT_FAR;
+    this.summonChip.setText(show ? 'Bring the pot here' : '');
+    if (!show) return;
+    this.player.head.getWorldPosition(this.headWorld);
+    this.horizontalForward(this.headForward);
+    this.summonChip.position.copy(this.headWorld).addScaledVector(this.headForward, 0.45);
+    this.summonChip.position.y -= 0.16;
+    this.summonChip.lookAt(this.headWorld);
   }
 
   /** Plants sway and react to touch; motes, ripples, bursts and butterflies animate. */
@@ -1042,6 +1131,10 @@ export class TendSystem extends createSystem({
     const now = Date.now();
     const role = entity.getValue(TendTarget, 'role');
     const phase = this.state.phase;
+    if (role === TargetRole.Summon) {
+      if (this.summonChip.visible) this.summonPot();
+      return;
+    }
     if (role === TargetRole.Seed && phase === 'empty') {
       this.plantSeed();
     } else if (role === TargetRole.Species && phase === 'empty') {
@@ -1403,6 +1496,7 @@ export class TendSystem extends createSystem({
   private hintText(now: number, hands: boolean): string {
     const s = this.state;
     if (this.immersive && !this.placed) return 'Looking for your desk...';
+    if (Date.now() < this.movedHintUntil) return 'Pot moved here. Pinch and drag it to adjust';
     switch (s.phase) {
       case 'empty':
         if (now < this.summaryUntil) return this.weekText(now);
@@ -1475,6 +1569,35 @@ function formatRemaining(ms: number): string {
   const seconds = Math.max(0, Math.ceil(ms / 1000));
   if (seconds >= 60) return `${Math.ceil(seconds / 60)} min left`;
   return `${seconds}s left`;
+}
+
+/** The point of a polygon (in its plane's x/z) nearest to (x, z); distance 0 if inside. */
+function nearestPointOnPolygon(
+  x: number,
+  z: number,
+  poly: { x: number; z: number }[],
+): { x: number; z: number; distance: number } {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if (a.z > z !== b.z > z && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) inside = !inside;
+  }
+  if (inside) return { x, z, distance: 0 };
+  let best = { x, z, distance: Infinity };
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[j];
+    const b = poly[i];
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    const lengthSq = dx * dx + dz * dz;
+    const t = lengthSq > 0 ? clamp01(((x - a.x) * dx + (z - a.z) * dz) / lengthSq) : 0;
+    const px = a.x + t * dx;
+    const pz = a.z + t * dz;
+    const d = Math.hypot(x - px, z - pz);
+    if (d < best.distance) best = { x: px, z: pz, distance: d };
+  }
+  return best;
 }
 
 function distanceToSegment(x: number, z: number, a: { x: number; z: number }, b: { x: number; z: number }): number {

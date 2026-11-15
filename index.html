@@ -148,6 +148,11 @@
         margin: 8px 0 0;
         font-size: 13px;
       }
+      .reset-line {
+        margin: -4px 0 12px;
+        font-size: 13px;
+      }
+      #reset-pot,
       #clear-friends {
         background: none;
         padding: 0;
@@ -186,6 +191,7 @@
         <label><input type="checkbox" id="highContrast" /> Large, high-contrast labels</label>
         <label><input type="checkbox" id="voice" /> Voice commands: "plant", "water", "time", "this week", "help"</label>
       </div>
+      <p class="reset-line">Pot in the wrong place? <button id="reset-pot">Reset pot position</button></p>
       <button id="enter-xr">Enter mixed reality</button>
       <button id="hide-landing">Try it here</button>
       <p id="xr-note">Checking for mixed reality support...</p>

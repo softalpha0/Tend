@@ -5,6 +5,7 @@ export const TargetRole = {
   Pot: 'pot',
   Duration: 'duration',
   Species: 'species',
+  Summon: 'summon',
 } as const;
 
 /** Marks an object the user can click or ray-select as a fallback to hand gestures. */

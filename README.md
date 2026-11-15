@@ -33,7 +33,7 @@ day you come back. Quit early and the plant wilts.
 ## Features (all working now)
 
 - **Hands only, end to end.** Plant, water, check the time, change session length, move the pot and end a session without a controller. Controllers and a mouse also work as a fallback.
-- **Your real desk.** Plane detection finds a surface at desk height that you are facing and puts the pot near its front edge.
+- **Your real desk.** Plane detection finds a surface at desk height within arm's reach (measured to its nearest edge) that you are facing, and puts the pot near its front edge. If the pot ever ends up out of reach, a **Bring the pot here** button appears in front of you: pinch it, or point at it and pinch, and the pot moves to the nearest reachable surface. *Reset pot position* on the start card does the same for the next session.
 - **Persistent spatial anchor.** The pot is pinned to the room with a WebXR persistent anchor, so it and your garden are exactly where you left them next time. Without anchor support, it falls back to its saved spot on the desk.
 - **A 2-minute starter.** Your first session is two minutes, so you see a bloom before you take the headset off. After that choose 5, 10, 25 or 50 minutes.
 - **Clean pause and resume.** Taking the headset off or opening the system menu pauses the session. Only quitting on purpose (pinch and hold the pot for 2 seconds) wilts the plant.

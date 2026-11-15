@@ -44,6 +44,16 @@ export class PotAnchor {
     }
   }
 
+  /** Forgets the saved anchor, so the next session places the pot afresh. */
+  forget(): void {
+    const uuid = readKey();
+    if (uuid && this.session?.deletePersistentAnchor) {
+      void this.session.deletePersistentAnchor(uuid).catch(() => undefined);
+    }
+    writeKey(null);
+    this.anchor = null;
+  }
+
   /** Drops the current anchor so nothing pulls the pot while the user moves it. */
   release(): void {
     this.anchor = null;

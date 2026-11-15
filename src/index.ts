@@ -96,6 +96,13 @@ function setUpLanding(world: World): void {
 
   setUpSharing();
 
+  const resetPot = document.getElementById('reset-pot') as HTMLButtonElement;
+  resetPot.addEventListener('click', () => {
+    window.dispatchEvent(new CustomEvent('tend-settings', { detail: { resetPot: true } }));
+    resetPot.textContent = 'Done: it will be placed on your nearest desk';
+    resetPot.disabled = true;
+  });
+
   enter.addEventListener('click', () => {
     unlockAudio();
     world.launchXR();
