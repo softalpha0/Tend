@@ -51,25 +51,21 @@ import { TargetRole, TendTarget } from './tend-components.js';
 import { VoiceCommand, VoiceCommands } from './voice.js';
 import { fetchGardens, MAX_LIVE_FRIENDS, normalizeCode, publishGarden, syncConfig } from './sync.js';
 
-// Desk detection: horizontal surfaces between these heights count as a desk.
+// Placement: the pot goes on the real surface just in front of the user.
+/** Surfaces between these heights count as a desk (metres above the floor). */
 const DESK_MIN_HEIGHT = 0.45;
-const DESK_MAX_HEIGHT = 1.3;
-/** Typical desk and table heights; lower surfaces are often couches or coffee tables. */
-const DESK_TYPICAL_MIN = 0.62;
-const DESK_TYPICAL_MAX = 1.1;
-const NOT_A_DESK = ['couch', 'bed', 'floor', 'ceiling', 'shelf', 'storage'];
-/** Wait this long after the first desk candidate so more planes can arrive. */
-const DESK_SETTLE_S = 1.2;
-/** Give up on plane detection and place the pot in front of the user. */
-const DESK_TIMEOUT_S = 6;
-/** Only surfaces whose nearest edge is within this reach of the user are used (metres, horizontal). */
-const DESK_REACH = 1.0;
+/** A surface must be at least this far below the eyes to count as a desk. */
+const BELOW_EYES = 0.15;
+/** How far in front of the user the pot is placed (metres, horizontal). */
+const PLACE_AHEAD = 0.42;
+/** Let head tracking settle this long after entering before placing. */
+const PLACE_SETTLE_S = 1.0;
+/** Look for a hit-test surface this long before using the fallbacks. */
+const SURFACE_SEARCH_S = 1.5;
 /** Beyond this distance from the user the pot counts as out of reach. */
 const POT_FAR = 1.0;
 /** A saved anchor further than this from the user is ignored, and the pot is placed afresh. */
 const ANCHOR_MAX_DISTANCE = 1.3;
-/** Keep the pot at least this far from the desk edge. */
-const DESK_EDGE_MARGIN = 0.2;
 
 // Gesture distances in metres.
 // Generous so the gestures work without precise aim.
@@ -167,10 +163,11 @@ export class TendSystem extends createSystem({
   // Desk placement for the current XR session.
   private immersive = false;
   private placed = false;
-  private desk: Object3D | null = null;
-  private deskPolygon: { x: number; z: number }[] = [];
+  /** Height of the real surface the pot sits on, or null when it floats. */
+  private surfaceY: number | null = null;
+  /** An in-progress search for the surface in front of the user. */
+  private search: { source?: XRHitTestSource; started: number; target: Vector3; summoned: boolean } | null = null;
   private xrStartTime = 0;
-  private firstCandidateTime = -1;
 
   // Interaction state.
   private held: Held = null;
@@ -381,7 +378,9 @@ export class TendSystem extends createSystem({
     this.dropHeld();
     if (immersive) {
       this.placed = false;
-      this.desk = null;
+      this.surfaceY = null;
+      this.cancelSearch();
+      this.root.visible = false; // shown once placed, so it never appears and then jumps
       this.anchorState = 'restoring';
       void this.potAnchor.restore(this.world.session).then((ok) => {
         this.anchorState = ok ? 'restored' : 'none';
@@ -389,28 +388,31 @@ export class TendSystem extends createSystem({
       if (this.state.voice) this.voice.setEnabled(true);
       if (this.sync) void this.refreshFriends();
       this.xrStartTime = this.clock;
-      this.firstCandidateTime = -1;
       this.table.visible = false;
       this.scene.background = null;
       this.hintUntil = 0;
     } else {
       this.potAnchor.endSession();
       this.anchorState = 'none';
+      this.cancelSearch();
       this.placeOnPreviewTable();
     }
   }
 
   /**
-   * Place the pot for this XR session: at its saved anchor if the headset
-   * still knows it, otherwise on the detected desk.
+   * Place the pot for this XR session: at its saved anchor if that is within
+   * reach, otherwise on the real surface just in front of the user.
    */
   private tryPlace(): void {
     const waited = this.clock - this.xrStartTime;
+    if (waited < PLACE_SETTLE_S) return;
     if (this.anchorState === 'restoring' && waited < ANCHOR_WAIT_S) return;
-    if (this.anchorState === 'restored') {
+    if (this.anchorState === 'restored' && !this.search) {
       if (this.followAnchor()) {
         if (this.potDistance() <= ANCHOR_MAX_DISTANCE) {
           this.placed = true;
+          this.root.visible = true;
+          this.surfaceY = this.root.position.y;
           console.info('[Tend] pot restored from its saved anchor');
           return;
         }
@@ -418,13 +420,111 @@ export class TendSystem extends createSystem({
         console.info('[Tend] saved anchor is out of reach; placing the pot again');
         this.potAnchor.release();
         this.anchorState = 'none';
-        this.state.deskOffset = null;
       } else if (waited < ANCHOR_WAIT_S) {
         return;
       }
     }
-    this.tryPlaceOnDesk();
-    if (this.placed) this.anchorDirty = true;
+    if (!this.search) this.beginSurfaceSearch(false);
+    this.continueSurfaceSearch();
+  }
+
+  /**
+   * Start looking for the real surface just in front of the user: a hit-test
+   * ray pointing straight down from a spot a little ahead of their head.
+   * Quest 3 hit-tests against its depth model, so this finds a desk even if
+   * it was never marked in Space Setup.
+   */
+  private beginSurfaceSearch(summoned: boolean): void {
+    this.cancelSearch();
+    this.player.head.getWorldPosition(this.headWorld);
+    this.horizontalForward(this.headForward);
+    const target = this.headWorld.clone().addScaledVector(this.headForward, PLACE_AHEAD);
+    const search: NonNullable<typeof this.search> = { started: this.clock, target, summoned };
+    this.search = search;
+    const space = this.world.xrReferenceSpace;
+    if (!space || typeof XRRay === 'undefined') return;
+    // The ray is given in the reference space, which the player rig maps to world space.
+    this.player.updateMatrixWorld();
+    const origin = target.clone().applyMatrix4(this.temp2Matrix.copy(this.player.matrixWorld).invert());
+    let ray: XRRay;
+    try {
+      ray = new XRRay({ x: origin.x, y: origin.y, z: origin.z, w: 1 }, { x: 0, y: -1, z: 0, w: 0 });
+    } catch {
+      return;
+    }
+    void this.world.requestHitTestSource({ space, offsetRay: ray }).then((source) => {
+      if (this.search === search) search.source = source;
+      else source?.cancel();
+    });
+  }
+
+  /** Each frame while searching: use the first real surface found, or fall back. */
+  private continueSurfaceSearch(): void {
+    const search = this.search;
+    if (!search) return;
+    this.player.head.getWorldPosition(this.headWorld);
+    const highest = this.headWorld.y - BELOW_EYES;
+    const frame = this.world.xrFrame;
+    const space = this.world.xrReferenceSpace;
+    if (search.source && frame && space) {
+      for (const hit of frame.getHitTestResults(search.source)) {
+        const pose = hit.getPose(space);
+        if (!pose) continue;
+        const p = pose.transform.position;
+        this.temp.set(p.x, p.y, p.z).applyMatrix4(this.player.matrixWorld);
+        if (this.temp.y >= DESK_MIN_HEIGHT && this.temp.y <= highest) {
+          this.finishPlacement(this.temp.x, this.temp.y, this.temp.z, 'surface in front (hit test)', true);
+          return;
+        }
+      }
+    }
+    if (this.clock - search.started < SURFACE_SEARCH_S) return;
+    // Fallback: a Space Setup surface directly under the spot in front of the user.
+    const planeY = this.planeHeightUnder(search.target, highest);
+    if (planeY !== null) {
+      this.finishPlacement(search.target.x, planeY, search.target.z, 'Space Setup surface in front', true);
+      return;
+    }
+    // No surface in front: float at desk height in front of the user.
+    const y = Math.max(this.headWorld.y - 0.5, 0.55);
+    this.finishPlacement(search.target.x, y, search.target.z, 'floating in front', false);
+  }
+
+  /** Height of the highest detected desk-height plane whose outline contains `point`, if any. */
+  private planeHeightUnder(point: Vector3, highest: number): number | null {
+    let best: number | null = null;
+    for (const entity of this.queries.planes.entities) {
+      const plane = entity.getValue(XRPlane, '_plane') as XRPlane | undefined;
+      const object = entity.object3D;
+      if (!plane || !object || plane.orientation !== 'horizontal') continue;
+      object.updateMatrixWorld(true);
+      object.getWorldPosition(this.temp);
+      const y = this.temp.y;
+      if (y < DESK_MIN_HEIGHT || y > highest) continue;
+      this.temp2.copy(point);
+      object.worldToLocal(this.temp2);
+      if (!pointInPolygon(this.temp2.x, this.temp2.z, plane.polygon)) continue;
+      if (best === null || y > best) best = y;
+    }
+    return best;
+  }
+
+  private finishPlacement(x: number, y: number, z: number, how: string, onSurface: boolean): void {
+    const summoned = this.search?.summoned ?? false;
+    this.cancelSearch();
+    this.root.position.set(x, y, z);
+    this.surfaceY = onSurface ? y : null;
+    this.faceUser();
+    this.placed = true;
+    this.root.visible = true;
+    this.anchorDirty = true;
+    if (summoned) this.movedHintUntil = Date.now() + 3000;
+    console.info(`[Tend] pot placed: ${how} at height ${y.toFixed(2)} m`);
+  }
+
+  private cancelSearch(): void {
+    this.search?.source?.cancel();
+    this.search = null;
   }
 
   /** Moves the pot to its anchor's pose. Returns false if the anchor isn't tracked. */
@@ -452,87 +552,16 @@ export class TendSystem extends createSystem({
     this.anchorDirty = false;
   }
 
-  /** After restoring from an anchor, find the desk under the pot so it can still slide along it. */
-  private findDeskUnderPot(): void {
-    for (const entity of this.queries.planes.entities) {
-      const plane = entity.getValue(XRPlane, '_plane') as XRPlane | undefined;
-      const object = entity.object3D;
-      if (!plane || !object || plane.orientation !== 'horizontal') continue;
-      object.getWorldPosition(this.temp);
-      if (Math.abs(this.temp.y - this.root.position.y) > 0.05) continue;
-      this.desk = object;
-      this.deskPolygon = plane.polygon.map((p) => ({ x: p.x, z: p.z }));
-      return;
-    }
-  }
-
   private placeOnPreviewTable(): void {
     this.table.visible = true;
     this.scene.background = new Color('#e8eee6');
-    this.desk = null;
+    this.surfaceY = null;
+    this.root.visible = true;
     this.placed = true;
     this.root.position.set(0, PREVIEW_TABLE_HEIGHT, -0.45);
     this.root.rotation.set(0, 0, 0);
     this.camera.position.set(0, 1.08, 0.3);
     this.camera.lookAt(0, PREVIEW_TABLE_HEIGHT + 0.14, -0.45);
-  }
-
-  /**
-   * Choose the desk: a horizontal surface at desk height whose nearest edge is
-   * within arm's reach, preferring the one in front of the user. With `now`,
-   * place immediately (used when the user asks for the pot to be brought over).
-   */
-  private tryPlaceOnDesk(now = false): void {
-    const elapsed = this.clock - this.xrStartTime;
-    this.player.head.getWorldPosition(this.headWorld);
-    this.horizontalForward(this.headForward);
-
-    let best: Object3D | null = null;
-    let bestScore = Infinity;
-    let bestPolygon: { x: number; z: number }[] = [];
-    for (const entity of this.queries.planes.entities) {
-      const plane = entity.getValue(XRPlane, '_plane') as XRPlane | undefined;
-      const object = entity.object3D;
-      if (!plane || !object || plane.orientation !== 'horizontal') continue;
-      object.getWorldPosition(this.temp);
-      if (this.temp.y < DESK_MIN_HEIGHT || this.temp.y > DESK_MAX_HEIGHT) continue;
-      const label = (plane as XRPlane & { semanticLabel?: string }).semanticLabel ?? '';
-      if (NOT_A_DESK.includes(label)) continue;
-      const polygon = plane.polygon.map((p) => ({ x: p.x, z: p.z }));
-      // Distance from the user to the surface's nearest edge, not its centre:
-      // a big desk can be centred far away and still be right in front of you.
-      object.updateMatrixWorld(true);
-      this.temp2.copy(this.headWorld);
-      object.worldToLocal(this.temp2);
-      const near = nearestPointOnPolygon(this.temp2.x, this.temp2.z, polygon);
-      if (near.distance > DESK_REACH) continue;
-      this.temp2.set(near.x, 0, near.z);
-      object.localToWorld(this.temp2);
-      let score = near.distance;
-      // Prefer the surface the user is facing.
-      this.temp.set(this.temp2.x - this.headWorld.x, 0, this.temp2.z - this.headWorld.z);
-      if (this.temp.lengthSq() > 1e-4) score += this.temp.normalize().angleTo(this.headForward) * 0.35;
-      object.getWorldPosition(this.temp);
-      if (this.temp.y < DESK_TYPICAL_MIN || this.temp.y > DESK_TYPICAL_MAX) score += 0.8;
-      if (label === 'table' || label === 'desk') score -= 0.15; // a tie-breaker only
-      if (score < bestScore) {
-        bestScore = score;
-        best = object;
-        bestPolygon = polygon;
-      }
-    }
-
-    if (best && this.firstCandidateTime < 0) this.firstCandidateTime = this.clock;
-    const settled = best && (now || this.clock - this.firstCandidateTime > DESK_SETTLE_S);
-    if (best && settled) {
-      best.getWorldPosition(this.temp);
-      console.info(`[Tend] desk chosen at height ${this.temp.y.toFixed(2)} m`);
-      this.desk = best;
-      this.deskPolygon = bestPolygon;
-      this.placeOnDesk(!now);
-    } else if (now || elapsed > DESK_TIMEOUT_S) {
-      this.placeInFrontOfUser();
-    }
   }
 
   /** Horizontal distance from the user's head to the pot. */
@@ -541,80 +570,16 @@ export class TendSystem extends createSystem({
     return Math.hypot(this.root.position.x - this.headWorld.x, this.root.position.z - this.headWorld.z);
   }
 
-  /** "Bring the pot here": re-place the pot on the nearest reachable surface. */
+  /** "Bring the pot here": place the pot again on the surface in front of the user. */
   private summonPot(): void {
     if (this.clock - this.lastSummon < 1) return;
     this.lastSummon = this.clock;
     this.potAnchor.release();
+    this.anchorState = 'none';
     this.held = null;
-    this.desk = null;
-    this.state.deskOffset = null;
-    this.tryPlaceOnDesk(true);
-    this.anchorDirty = true;
-    this.movedHintUntil = Date.now() + 3000;
+    this.placed = false;
+    this.beginSurfaceSearch(true);
     sounds.select();
-    saveState(this.state);
-  }
-
-  private placeOnDesk(useSaved = true): void {
-    const desk = this.desk!;
-    desk.updateMatrixWorld(true);
-    const saved = useSaved ? this.state.deskOffset : null;
-    const local =
-      saved && this.insideDesk(saved[0], saved[1], DESK_EDGE_MARGIN * 0.5)
-        ? { x: saved[0], z: saved[1] }
-        : this.defaultDeskSpot();
-    this.temp.set(local.x, 0, local.z);
-    desk.localToWorld(this.temp);
-    this.root.position.copy(this.temp);
-    if (saved && this.potDistance() > POT_FAR) {
-      // The saved spot is out of reach from where the user sits now.
-      const spot = this.defaultDeskSpot();
-      this.temp.set(spot.x, 0, spot.z);
-      desk.localToWorld(this.temp);
-      this.root.position.copy(this.temp);
-    }
-    this.faceUser();
-    this.placed = true;
-  }
-
-  /** Walk from the desk centre toward the user and stop near the front edge. */
-  private defaultDeskSpot(): { x: number; z: number } {
-    const desk = this.desk!;
-    let cx = 0;
-    let cz = 0;
-    for (const p of this.deskPolygon) {
-      cx += p.x;
-      cz += p.z;
-    }
-    cx /= Math.max(this.deskPolygon.length, 1);
-    cz /= Math.max(this.deskPolygon.length, 1);
-    this.temp.copy(this.headWorld);
-    desk.worldToLocal(this.temp);
-    for (let t = 1; t >= 0; t -= 0.05) {
-      const x = cx + (this.temp.x - cx) * t;
-      const z = cz + (this.temp.z - cz) * t;
-      if (this.insideDesk(x, z, DESK_EDGE_MARGIN)) return { x, z };
-    }
-    return { x: cx, z: cz };
-  }
-
-  private insideDesk(x: number, z: number, margin: number): boolean {
-    const poly = this.deskPolygon;
-    if (poly.length < 3) return false;
-    let inside = false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      const a = poly[i];
-      const b = poly[j];
-      if (a.z > z !== b.z > z && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) {
-        inside = !inside;
-      }
-    }
-    if (!inside) return false;
-    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-      if (distanceToSegment(x, z, poly[j], poly[i]) < margin) return false;
-    }
-    return true;
   }
 
   /** The direction the user is looking, flattened onto the floor. */
@@ -624,18 +589,6 @@ export class TendSystem extends createSystem({
     out.y = 0;
     if (out.lengthSq() < 1e-4) out.set(0, 0, -1);
     return out.normalize();
-  }
-
-  private placeInFrontOfUser(): void {
-    this.player.head.getWorldPosition(this.headWorld);
-    this.horizontalForward(this.temp).multiplyScalar(0.45);
-    this.root.position.set(
-      this.headWorld.x + this.temp.x,
-      Math.max(this.headWorld.y - 0.55, 0.5),
-      this.headWorld.z + this.temp.z,
-    );
-    this.faceUser();
-    this.placed = true;
   }
 
   private faceUser(): void {
@@ -666,7 +619,6 @@ export class TendSystem extends createSystem({
       if (this.anchorDirty) this.saveAnchor();
       // Follow the anchor so the pot stays put as tracking corrects itself.
       if (this.held?.kind !== 'pot' && this.potAnchor.active) this.followAnchor();
-      if (!this.desk && this.anchorState === 'restored') this.findDeskUnderPot();
     }
 
     this.updatePresence(now);
@@ -1048,10 +1000,9 @@ export class TendSystem extends createSystem({
       }
     } else if (held.hand.pinching) {
       this.temp.copy(held.hand.pinchPoint).add(held.offset);
-      if (this.desk) {
-        // Slide along the desk surface.
-        this.root.position.x = this.temp.x;
-        this.root.position.z = this.temp.z;
+      if (this.surfaceY !== null) {
+        // Slide along the surface it sits on.
+        this.root.position.set(this.temp.x, this.surfaceY, this.temp.z);
       } else {
         this.root.position.copy(this.temp);
       }
@@ -1060,12 +1011,6 @@ export class TendSystem extends createSystem({
         this.held = null;
         this.faceUser();
         this.anchorDirty = true;
-        if (this.desk) {
-          this.temp.copy(this.root.position);
-          this.desk.worldToLocal(this.temp);
-          this.state.deskOffset = [this.temp.x, this.temp.z];
-          saveState(this.state);
-        }
       }
     }
   }
@@ -1571,39 +1516,13 @@ function formatRemaining(ms: number): string {
   return `${seconds}s left`;
 }
 
-/** The point of a polygon (in its plane's x/z) nearest to (x, z); distance 0 if inside. */
-function nearestPointOnPolygon(
-  x: number,
-  z: number,
-  poly: { x: number; z: number }[],
-): { x: number; z: number; distance: number } {
+/** Whether (x, z) lies inside a plane's outline (its polygon, in the plane's x/z). */
+function pointInPolygon(x: number, z: number, poly: ArrayLike<{ x: number; z: number }>): boolean {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     const a = poly[i];
     const b = poly[j];
     if (a.z > z !== b.z > z && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) inside = !inside;
   }
-  if (inside) return { x, z, distance: 0 };
-  let best = { x, z, distance: Infinity };
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const a = poly[j];
-    const b = poly[i];
-    const dx = b.x - a.x;
-    const dz = b.z - a.z;
-    const lengthSq = dx * dx + dz * dz;
-    const t = lengthSq > 0 ? clamp01(((x - a.x) * dx + (z - a.z) * dz) / lengthSq) : 0;
-    const px = a.x + t * dx;
-    const pz = a.z + t * dz;
-    const d = Math.hypot(x - px, z - pz);
-    if (d < best.distance) best = { x: px, z: pz, distance: d };
-  }
-  return best;
-}
-
-function distanceToSegment(x: number, z: number, a: { x: number; z: number }, b: { x: number; z: number }): number {
-  const dx = b.x - a.x;
-  const dz = b.z - a.z;
-  const lengthSq = dx * dx + dz * dz;
-  const t = lengthSq > 0 ? clamp01(((x - a.x) * dx + (z - a.z) * dz) / lengthSq) : 0;
-  return Math.hypot(x - (a.x + t * dx), z - (a.z + t * dz));
+  return inside;
 }
